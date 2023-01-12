@@ -12,3 +12,7 @@ $ gh extension install https://github.com/cschleiden/gh-effective-workflow
 $ cd demo-repo
 $ gh effective-workflow view <run id>
 ```
+
+#### Example
+
+![Example output](./media/example.png)
