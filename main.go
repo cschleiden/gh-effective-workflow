@@ -103,7 +103,7 @@ func runView(opts *ViewOptions) error {
 		return fmt.Errorf("failed to get workflow: %w", err)
 	}
 
-	callingWorkflowContent, err := getWorkflowContent(client, baseRepo, workflow.Path, run.HeadBranch)
+	callingWorkflowContent, err := getWorkflowContent(client, baseRepo, workflow.Path, run.HeadSha)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow content: %w", err)
 	}
@@ -145,7 +145,7 @@ func runView(opts *ViewOptions) error {
 			return fmt.Errorf("failed to get workflow: %w", err)
 		}
 
-		workflowContent, err := getWorkflowContent(client, referencedRepo, path, ref)
+		workflowContent, err := getWorkflowContent(client, referencedRepo, path, refWF.SHA)
 		if err != nil {
 			return fmt.Errorf("failed to get workflow content: %w", err)
 		}
