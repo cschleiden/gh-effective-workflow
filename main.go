@@ -94,17 +94,36 @@ func runView(opts *ViewOptions) error {
 	}
 
 	// Get & show workflow
+	fmt.Fprintln(opts.IO.Out, opts.IO.ColorScheme().Bold("Workflow file for this run\n"))
+
 	workflow, err := getWorkflowByID(client, baseRepo, strconv.FormatInt(run.WorkflowID, 10))
 	if err != nil {
 		return fmt.Errorf("failed to get workflow: %w", err)
 	}
 
-	if err := viewWorkflowContent(opts, client, baseRepo, workflow, run.HeadBranch); err != nil {
-		return fmt.Errorf("failed to view workflow content: %w", err)
+	callingWorkflowContent, err := getWorkflowContent(client, baseRepo, workflow.Path, run.HeadBranch)
+	if err != nil {
+		return fmt.Errorf("failed to get workflow content: %w", err)
 	}
 
-	// Show referenced workflows
+	if err := displayYaml(opts, workflow.Name, workflow.Base(), run.HeadBranch, run.HeadSha, string(callingWorkflowContent), nil); err != nil {
+		return fmt.Errorf("failed to display yaml: %w", err)
+	}
+
+	// Calculate referenced workflows
+	wfs := make([]Workflow, 0)
+
+	wfs = append(wfs, Workflow{
+		Name:     workflow.Name,
+		RefPath:  workflow.Path,
+		Filename: workflow.Base(),
+		Ref:      run.HeadBranch,
+		SHA:      run.HeadSha,
+		YAML:     string(callingWorkflowContent),
+	})
+
 	for _, refWF := range run.ReferencedWorkflows {
+
 		// Parse referenced workflow in the form "octocat/Hello-World/.github/workflows/deploy.yml@main",
 		t := strings.Split(refWF.Path, "@")
 		path := t[0]
@@ -130,7 +149,29 @@ func runView(opts *ViewOptions) error {
 			return fmt.Errorf("failed to get workflow content: %w", err)
 		}
 
-		if err := displayYaml(opts, workflow.ID, workflow.Name, workflow.Base(), refWF.Ref, refWF.SHA, string(workflowContent)); err != nil {
+		wf := Workflow{
+			Name:     workflow.Name,
+			RefPath:  refWF.Path,
+			Filename: workflow.Base(),
+			Ref:      ref,
+			SHA:      refWF.SHA,
+			YAML:     string(workflowContent),
+		}
+
+		wfs = append(wfs, wf)
+	}
+
+	// Calculate refs
+	refs, err := GetReferences(wfs, run.ReferencedWorkflows)
+	if err != nil {
+		return fmt.Errorf("failed to get references: %w", err)
+	}
+
+	// Output
+	for _, wf := range wfs {
+		fmt.Fprintln(opts.IO.Out, opts.IO.ColorScheme().Bold("Called reusable workflow file\n"))
+
+		if err := displayYaml(opts, wf.Name, wf.Filename, wf.Ref, wf.SHA, wf.YAML, refs[wf.RefPath]); err != nil {
 			return fmt.Errorf("failed to display yaml: %w", err)
 		}
 	}
@@ -159,14 +200,6 @@ func getRun(client api.RESTClient, repo repo.Repository, runID string) (*Run, er
 	if err != nil {
 		return nil, err
 	}
-
-	// // Set name to workflow name
-	// workflow, err := workflowShared.GetWorkflow(client, repo, result.WorkflowID)
-	// if err != nil {
-	// 	return nil, err
-	// } else {
-	// 	result.workflowName = workflow.Name
-	// }
 
 	return &result, nil
 }
@@ -207,23 +240,7 @@ func getWorkflowContent(client api.RESTClient, repo repo.Repository, wfPath stri
 	return decoded, nil
 }
 
-func viewWorkflowContent(opts *ViewOptions, client api.RESTClient, repo repo.Repository, workflow *wfshared.Workflow, ref string) error {
-	yamlBytes, err := getWorkflowContent(client, repo, workflow.Path, ref)
-	if err != nil {
-		if s, ok := err.(api.HTTPError); ok && s.StatusCode == 404 {
-			if ref != "" {
-				return fmt.Errorf("could not find workflow file %s on %s, try specifying a different ref", workflow.Base(), ref)
-			}
-			return fmt.Errorf("could not find workflow file %s, try specifying a branch or tag using `--ref`", workflow.Base())
-		}
-		return fmt.Errorf("could not get workflow file content: %w", err)
-	}
-
-	return displayYaml(opts, workflow.ID, workflow.Name, workflow.Base(), ref, "", string(yamlBytes))
-}
-
-func displayYaml(opts *ViewOptions, ID int64, name, fileName, ref, sha, yaml string) error {
-
+func displayYaml(opts *ViewOptions, name, fileName, ref, sha, yaml string, refs []Reference) error {
 	cs := opts.IO.ColorScheme()
 	out := opts.IO.Out
 
@@ -232,9 +249,33 @@ func displayYaml(opts *ViewOptions, ID int64, name, fileName, ref, sha, yaml str
 		shaStr = fmt.Sprintf(" (%s)", cs.Gray(sha))
 	}
 
-	fmt.Fprintf(out, "%s - %s@%s %s\n", cs.Bold(name), cs.Gray(fileName), ref, shaStr)
-	fmt.Fprintf(out, "ID: %s", cs.Cyanf("%d", ID))
+	// Heading
+	fmt.Fprintf(out, "%s - %s@%s %s\n", name, cs.Gray(fileName), ref, shaStr)
 
+	if len(refs) > 0 {
+		// References
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, cs.Gray(fmt.Sprintf("%d references", len(refs))))
+
+		for _, ref := range refs {
+			codeBlock := fmt.Sprintf("```yaml\n%s\n```", ref.SourceLine)
+			rendered, err := markdown.Render(codeBlock,
+				markdown.WithTheme(opts.IO.TerminalTheme()),
+				markdown.WithoutIndentation(),
+				markdown.WithWrap(0))
+			if err != nil {
+				return err
+			}
+
+			line := strings.Split(rendered, "\n")[2] // Ignore code fencing
+			line = strings.ReplaceAll(line, "\n", "")
+			line = strings.TrimSpace(line)
+
+			fmt.Fprintf(out, "- %s: %s (%s)\n", cs.Gray(strconv.Itoa(ref.SourceLineNo)), line, cs.Gray(ref.SourceFilename))
+		}
+	}
+
+	// YAML content
 	codeBlock := fmt.Sprintf("```yaml\n%s\n```", yaml)
 	rendered, err := markdown.Render(codeBlock,
 		markdown.WithTheme(opts.IO.TerminalTheme()),
