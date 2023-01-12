@@ -19,6 +19,8 @@ import (
 	"github.com/cli/go-gh/pkg/api"
 	"github.com/cli/go-gh/pkg/markdown"
 	repo "github.com/cli/go-gh/pkg/repository"
+	"github.com/cli/go-gh/pkg/tableprinter"
+	"github.com/cli/go-gh/pkg/term"
 	"github.com/spf13/cobra"
 )
 
@@ -94,7 +96,7 @@ func runView(opts *ViewOptions) error {
 	}
 
 	// Get & show workflow
-	fmt.Fprintln(opts.IO.Out, opts.IO.ColorScheme().Bold("Workflow file for this run\n"))
+	fmt.Fprintln(opts.IO.Out, opts.IO.ColorScheme().CyanBold("Workflow file for this run\n"))
 
 	workflow, err := getWorkflowByID(client, baseRepo, strconv.FormatInt(run.WorkflowID, 10))
 	if err != nil {
@@ -113,17 +115,16 @@ func runView(opts *ViewOptions) error {
 	// Calculate referenced workflows
 	wfs := make([]Workflow, 0)
 
-	wfs = append(wfs, Workflow{
+	callingWorkflow := Workflow{
 		Name:     workflow.Name,
 		RefPath:  workflow.Path,
 		Filename: workflow.Base(),
 		Ref:      run.HeadBranch,
 		SHA:      run.HeadSha,
 		YAML:     string(callingWorkflowContent),
-	})
+	}
 
 	for _, refWF := range run.ReferencedWorkflows {
-
 		// Parse referenced workflow in the form "octocat/Hello-World/.github/workflows/deploy.yml@main",
 		t := strings.Split(refWF.Path, "@")
 		path := t[0]
@@ -162,14 +163,15 @@ func runView(opts *ViewOptions) error {
 	}
 
 	// Calculate refs
-	refs, err := GetReferences(wfs, run.ReferencedWorkflows)
+	allWorkflows := append([]Workflow{callingWorkflow}, wfs...)
+	refs, err := GetReferences(allWorkflows, run.ReferencedWorkflows)
 	if err != nil {
 		return fmt.Errorf("failed to get references: %w", err)
 	}
 
 	// Output
 	for _, wf := range wfs {
-		fmt.Fprintln(opts.IO.Out, opts.IO.ColorScheme().Bold("Called reusable workflow file\n"))
+		fmt.Fprintln(opts.IO.Out, opts.IO.ColorScheme().CyanBold("Called reusable workflow file\n"))
 
 		if err := displayYaml(opts, wf.Name, wf.Filename, wf.Ref, wf.SHA, wf.YAML, refs[wf.RefPath]); err != nil {
 			return fmt.Errorf("failed to display yaml: %w", err)
@@ -250,15 +252,25 @@ func displayYaml(opts *ViewOptions, name, fileName, ref, sha, yaml string, refs 
 	}
 
 	// Heading
-	fmt.Fprintf(out, "%s - %s@%s %s\n", name, cs.Gray(fileName), ref, shaStr)
+	fmt.Fprintf(out, "%s - %s@%s%s\n", name, cs.Gray(fileName), ref, shaStr)
 
 	if len(refs) > 0 {
 		// References
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, cs.Gray(fmt.Sprintf("%d references", len(refs))))
+
+		// Heading
+		heading := "reference"
+		if len(refs) > 1 {
+			heading = "references"
+		}
+		fmt.Fprintln(out, cs.Gray(fmt.Sprintf("%d %s", len(refs), heading)))
+
+		terminal := term.FromEnv()
+		termWidth, _, _ := terminal.Size()
+		t := tableprinter.New(terminal.Out(), terminal.IsTerminalOutput(), termWidth)
 
 		for _, ref := range refs {
-			codeBlock := fmt.Sprintf("```yaml\n%s\n```", ref.SourceLine)
+			codeBlock := fmt.Sprintf("```yaml\n%s\n```", strings.TrimSpace(ref.SourceLine))
 			rendered, err := markdown.Render(codeBlock,
 				markdown.WithTheme(opts.IO.TerminalTheme()),
 				markdown.WithoutIndentation(),
@@ -269,9 +281,16 @@ func displayYaml(opts *ViewOptions, name, fileName, ref, sha, yaml string, refs 
 
 			line := strings.Split(rendered, "\n")[2] // Ignore code fencing
 			line = strings.ReplaceAll(line, "\n", "")
-			line = strings.TrimSpace(line)
 
-			fmt.Fprintf(out, "- %s: %s (%s)\n", cs.Gray(strconv.Itoa(ref.SourceLineNo)), line, cs.Gray(ref.SourceFilename))
+			// fmt.Fprintf(out, "- %s\t%s:\t%s\n", cs.Gray(ref.SourceFilename), cs.Gray(strconv.Itoa(ref.SourceLineNo)), line)
+			t.AddField(cs.Gray(ref.SourceFilename))
+			t.AddField(cs.Gray(fmt.Sprintf("%4d", ref.SourceLineNo)))
+			t.AddField(line)
+			t.EndRow()
+		}
+
+		if err := t.Render(); err != nil {
+			return err
 		}
 	}
 
