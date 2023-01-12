@@ -4,6 +4,7 @@ Displays the effective workflow for a workflow run. Includes all of the called r
 
 ```bash
 $ gh extension install https://github.com/cschleiden/gh-effective-workflow
+```
 
 ### Usage:
 
